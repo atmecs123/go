@@ -23,6 +23,7 @@ import (
 	"github.com/platinasystems/atsock"
 	"github.com/platinasystems/log"
 	"github.com/platinasystems/go/internal/prog"
+	"github.com/platinasystems/redis"
 )
 
 type Command struct {
@@ -41,7 +42,7 @@ type Daemons struct {
 	goes  *goes.Goes
 	rpc   *atsock.RpcServer
 	done  chan struct{}
-
+	gracefullstop bool
 	cmdsByPid map[int]*exec.Cmd
 }
 
@@ -106,7 +107,6 @@ func (c *Command) Main(args ...string) error {
 func (c *Command) server() (err error) {
 	c.Daemons.done = make(chan struct{})
 	c.Daemons.cmdsByPid = make(map[int]*exec.Cmd)
-
 	signal.Ignore(syscall.SIGTERM)
 
 	c.rpc, err = atsock.NewRpcServer("daemons")
@@ -181,6 +181,23 @@ func (daemons *Daemons) start(args ...string) {
 		delete(daemons.cmdsByPid, p.Process.Pid)
 		daemons.mutex.Unlock()
 		daemons.done <- struct{}{}
+		if !daemons.gracefullstop {
+			daemons.start(args...)
+			if err = redis.IsReady(); err != nil {
+				fmt.Println("redis not ready")
+			} else {
+				if args[0] == "redisd" {
+					sock, err := atsock.NewRpcClient("vnetd")
+					if err != nil {
+						fmt.Println("rpc client", err)
+					}
+					err = sock.Call("Mk1.Createpub", "", &struct{}{})
+					if err != nil {
+						fmt.Println("Error", err)
+					}
+				}
+			}
+		}
 	}(p, wout, werr)
 }
 
@@ -190,6 +207,10 @@ func (daemons *Daemons) List(args struct{}, reply *string) error {
 		fmt.Fprintf(buf, "%d: %v\n", k, v.Args)
 	}
 	*reply = buf.String()
+	return nil
+}
+func (daemons *Daemons) Gracefullstop(args struct{}, reply *string) error {
+	daemons.gracefullstop=true
 	return nil
 }
 
